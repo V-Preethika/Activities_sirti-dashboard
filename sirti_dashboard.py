@@ -3,7 +3,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import os
-import glob
 from pathlib import Path
 
 # ═══════════════════════════════════════════════════════════════
@@ -110,27 +109,49 @@ st.markdown("""
     .progress-red { background: linear-gradient(90deg, #eb3349, #f45c43); }
     .progress-orange { background: linear-gradient(90deg, #f093fb, #f5576c); }
     .upload-box {
-        border: 2px dashed #667eea;
+        border: 3px dashed #667eea;
+        border-radius: 15px;
+        padding: 40px;
+        text-align: center;
+        background: linear-gradient(135deg, #f8f9ff 0%, #e8ecff 100%);
+        margin: 20px 0;
+    }
+    .upload-box h2 {
+        color: #667eea;
+        margin-bottom: 15px;
+    }
+    .upload-instructions {
+        background: white;
         border-radius: 10px;
         padding: 20px;
-        text-align: center;
-        background: #f8f9ff;
-        margin: 10px 0;
+        margin: 20px 0;
+        box-shadow: 0 2px 10px rgba(0,0,0,0.05);
     }
-    .file-found {
-        background: #d4edda;
-        border-left: 4px solid #11998e;
-        padding: 10px;
-        border-radius: 5px;
+    .step-box {
+        background: #f0f4ff;
+        border-left: 4px solid #667eea;
+        padding: 15px;
         margin: 10px 0;
+        border-radius: 5px;
     }
     .data-loaded {
         background: #d4edda;
         border-left: 4px solid #11998e;
-        padding: 10px;
-        border-radius: 5px;
-        margin: 10px 0;
+        padding: 15px;
+        border-radius: 8px;
+        margin: 15px 0;
         color: #155724;
+        font-weight: bold;
+    }
+    .file-list {
+        background: #f8f9fa;
+        border-radius: 8px;
+        padding: 15px;
+        margin: 10px 0;
+    }
+    .file-list li {
+        margin: 5px 0;
+        color: #555;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -138,64 +159,13 @@ st.markdown("""
 DAILY_QUOTA = 4
 
 # ═══════════════════════════════════════════════════════════════
-# BULLETPROOF FILE LOADER - Works on both local and Streamlit Cloud
+# DATA LOADING - CLEANING FUNCTION
 # ═══════════════════════════════════════════════════════════════
-@st.cache_data
-
-def load_data_auto():
-    """Auto-find and load CSV from multiple sources"""
-
-    # SOURCE 1: Look in the same folder as the script (GitHub repo on Streamlit Cloud)
-    script_dir = Path(__file__).parent.absolute()
-
-    # Possible CSV file names
-    csv_names = [
-        'Activities-SIRTI_04_12_26.csv',
-        'Activities-SIRTI.csv',
-        'SIRTI.csv',
-        'activities.csv'
-    ]
-
-    # Try to find CSV in script directory (this works on Streamlit Cloud)
-    for csv_name in csv_names:
-        csv_path = script_dir / csv_name
-        if csv_path.exists():
-            st.sidebar.markdown(f"<div class='data-loaded'>✅ Auto-loaded: {csv_name}</div>", unsafe_allow_html=True)
-            return pd.read_csv(csv_path, encoding='utf-8-sig')
-
-    # SOURCE 2: Search subfolders (work, data, etc.)
-    search_folders = [script_dir / 'work', script_dir / 'data', script_dir / 'Data']
-    for folder in search_folders:
-        if folder.exists():
-            for csv_name in csv_names:
-                csv_path = folder / csv_name
-                if csv_path.exists():
-                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Found in {folder.name}: {csv_name}</div>", unsafe_allow_html=True)
-                    return pd.read_csv(csv_path, encoding='utf-8-sig')
-
-    # SOURCE 3: Try glob patterns
-    for pattern in ['*.csv', '**/*.csv']:
-        matches = list(script_dir.glob(pattern))
-        if matches:
-            # Filter out tiny files (not real data)
-            valid_matches = [m for m in matches if m.stat().st_size > 1000]
-            if valid_matches:
-                # Prefer files with "SIRTI" or "Activities" in name
-                priority = [m for m in valid_matches if 'sirti' in m.name.lower() or 'activities' in m.name.lower()]
-                if priority:
-                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Auto-detected: {priority[0].name}</div>", unsafe_allow_html=True)
-                    return pd.read_csv(priority[0], encoding='utf-8-sig')
-                else:
-                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Using: {valid_matches[0].name}</div>", unsafe_allow_html=True)
-                    return pd.read_csv(valid_matches[0], encoding='utf-8-sig')
-
-    return None
-
 def clean_dataframe(df):
     """Clean and prepare the dataframe"""
-    df['Resource'] = df['Resource'].str.strip().str.title()
+    df['Resource'] = df['Resource'].astype(str).str.strip().str.title()
     df['Technician_Name'] = df['Resource'].fillna('Unknown')
-    df['Activity Status'] = df['Activity Status'].str.strip().str.lower()
+    df['Activity Status'] = df['Activity Status'].astype(str).str.strip().str.lower()
 
     def parse_duration(d):
         if pd.isna(d) or d == '00:00' or d == '':
@@ -213,47 +183,134 @@ def clean_dataframe(df):
 
     df['Duration_Minutes'] = df['Duration'].apply(parse_duration)
     df['Date_Clean'] = pd.to_datetime(df['Date'], format='%m/%d/%y', errors='coerce')
-    df['Customer_Phone'] = df['Phone'].fillna(df['Telephone Number']).fillna('N/A')
+    df['Customer_Phone'] = df['Phone'].fillna(df.get('Telephone Number', pd.Series(['N/A']*len(df)))).fillna('N/A')
     df['Plan_Speed_Display'] = df['Plan Speed'].fillna('N/A').astype(str)
     return df
 
 # ═══════════════════════════════════════════════════════════════
-# SIDEBAR - FILE STATUS
+# SIDEBAR - FILE UPLOAD (PRIMARY METHOD)
 # ═══════════════════════════════════════════════════════════════
-st.sidebar.markdown("## 📁 Data File")
+st.sidebar.markdown("## 📁 Upload Data File")
 st.sidebar.markdown("---")
 
-# Try to auto-load first
-df = load_data_auto()
+# PRIMARY: File upload
+uploaded_file = st.sidebar.file_uploader(
+    "**Drop your CSV file here**",
+    type=['csv'],
+    help="Upload any SIRTI activities CSV file"
+)
 
-if df is not None:
-    df = clean_dataframe(df)
-    st.sidebar.markdown("<div class='data-loaded'>✅ Data loaded successfully!</div>", unsafe_allow_html=True)
-    st.sidebar.markdown(f"- **Records:** {len(df)}")
-    st.sidebar.markdown(f"- **Technicians:** {df['Technician_Name'].nunique()}")
-    st.sidebar.markdown(f"- **Date:** {df['Date_Clean'].iloc[0].strftime('%Y-%m-%d') if len(df) > 0 and df['Date_Clean'].notna().any() else 'N/A'}")
-else:
-    st.sidebar.warning("⚠️ No CSV found in repo. Please upload below.")
+# SECONDARY: Try to auto-load from repo (for pre-loaded files)
+@st.cache_data
+def try_load_from_repo():
+    """Try to load CSV from the same folder as script"""
+    script_dir = Path(__file__).parent.absolute()
+    possible_names = [
+        'Activities-SIRTI_04_12_26.csv',
+        'Activities-SIRTI.csv',
+        'SIRTI.csv',
+        'activities.csv'
+    ]
+    for name in possible_names:
+        csv_path = script_dir / name
+        if csv_path.exists():
+            return pd.read_csv(csv_path, encoding='utf-8-sig')
+    # Check subfolders
+    for subfolder in ['work', 'data', 'Data']:
+        for name in possible_names:
+            csv_path = script_dir / subfolder / name
+            if csv_path.exists():
+                return pd.read_csv(csv_path, encoding='utf-8-sig')
+    return None
 
-    # Manual upload fallback
-    uploaded_file = st.sidebar.file_uploader("Upload CSV file:", type=['csv'])
+# Determine data source
+df = None
+source = None
 
-    if uploaded_file is not None:
+if uploaded_file is not None:
+    # User uploaded a file
+    try:
         df = clean_dataframe(pd.read_csv(uploaded_file, encoding='utf-8-sig'))
-        st.sidebar.success("✅ Uploaded file loaded!")
-    else:
-        st.sidebar.error("❌ No data loaded!")
-        st.markdown("""
-        <div style="text-align: center; padding: 50px;">
-            <h1>📁 SIRTI Dashboard</h1>
-            <h3>Data file not found</h3>
-            <div class="upload-box" style="max-width: 600px; margin: 30px auto;">
-                <p><b>Expected file:</b> <code>Activities-SIRTI_04_12_26.csv</code></p>
-                <p>Please upload your CSV file using the sidebar button.</p>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        source = f"Uploaded: {uploaded_file.name}"
+        st.sidebar.markdown(f"<div class='data-loaded'>✅ Loaded: {uploaded_file.name}</div>", unsafe_allow_html=True)
+        st.sidebar.markdown(f"- **Records:** {len(df)}")
+        st.sidebar.markdown(f"- **Technicians:** {df['Technician_Name'].nunique()}")
+    except Exception as e:
+        st.sidebar.error(f"❌ Error loading file: {str(e)}")
         st.stop()
+else:
+    # Try to load from repo
+    repo_df = try_load_from_repo()
+    if repo_df is not None:
+        df = clean_dataframe(repo_df)
+        source = "Pre-loaded from repository"
+        st.sidebar.markdown(f"<div class='data-loaded'>✅ Auto-loaded from repo</div>", unsafe_allow_html=True)
+        st.sidebar.markdown(f"- **Records:** {len(df)}")
+        st.sidebar.markdown(f"- **Technicians:** {df['Technician_Name'].nunique()}")
+    else:
+        # No data available
+        st.sidebar.info("👆 Upload a CSV file to get started")
+
+# Show upload instructions if no data
+if df is None:
+    st.markdown("""
+    <div style="text-align: center; padding: 30px;">
+        <h1>📡 SIRTI Field Operations Dashboard</h1>
+        <h3 style="color: #667eea;">Upload Your Data File to Begin</h3>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="upload-box">
+        <h2>📤 Drag & Drop Your CSV File</h2>
+        <p style="font-size: 16px; color: #555;">
+            Use the <b>sidebar on the left</b> to upload any SIRTI activities CSV file.
+        </p>
+        <p style="font-size: 14px; color: #888;">
+            Supports any CSV exported from the WFM system.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.markdown("""
+    <div class="upload-instructions">
+        <h3>📋 How to Use</h3>
+        <div class="step-box">
+            <b>Step 1:</b> Export the daily activities CSV from your WFM system
+        </div>
+        <div class="step-box">
+            <b>Step 2:</b> Click the <b>"Browse files"</b> button in the left sidebar
+        </div>
+        <div class="step-box">
+            <b>Step 3:</b> Select your CSV file and upload
+        </div>
+        <div class="step-box">
+            <b>Step 4:</b> Dashboard will automatically load and display all data
+        </div>
+    </div>
+
+    <div class="upload-instructions">
+        <h3>✅ Expected File Format</h3>
+        <p>The CSV should contain these columns:</p>
+        <div class="file-list">
+            <ul>
+                <li><b>Resource</b> - Technician name</li>
+                <li><b>Activity Type</b> - Installation, IPTV, Troubleshooting, etc.</li>
+                <li><b>Activity Status</b> - Completed, Canceled, Suspended</li>
+                <li><b>Name</b> - Customer name</li>
+                <li><b>Address</b> - Customer location</li>
+                <li><b>Phone</b> - Customer contact</li>
+                <li><b>Plan Name</b> - Service plan (GigaHome, etc.)</li>
+                <li><b>Duration</b> - Time spent on task</li>
+            </ul>
+        </div>
+        <p style="color: #888; font-size: 13px;">
+            <i>Standard format from Vodafone WFM system exports.</i>
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    st.stop()
 
 # ═══════════════════════════════════════════════════════════════
 # SIDEBAR - TECHNICIAN SELECTOR
@@ -416,17 +473,16 @@ if selected_tech == all_option:
 
     tech_summary_df = pd.DataFrame(tech_data)
 
-    # ROBUST STYLING - No applymap, uses simple column coloring
+    # Simple styling without applymap
     def highlight_status(val):
         if 'MET' in val: return 'background-color: #d4edda; color: #155724; font-weight: bold'
         elif 'NONE' in val: return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
         else: return 'background-color: #fff3cd; color: #856404; font-weight: bold'
 
-    # Use apply with axis=0 for column-wise styling (most compatible)
     try:
         styled_df = tech_summary_df.style.apply(lambda x: [highlight_status(v) if i == 5 else '' for i, v in enumerate(x)], axis=1)
     except Exception:
-        styled_df = tech_summary_df  # Fallback: no styling
+        styled_df = tech_summary_df
 
     st.dataframe(styled_df, use_container_width=True, height=600)
 
