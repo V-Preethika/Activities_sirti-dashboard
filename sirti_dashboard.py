@@ -130,65 +130,36 @@ st.markdown("""
 DAILY_QUOTA = 4
 
 # ═══════════════════════════════════════════════════════════════
-# BULLETPROOF FILE FINDER - Searches EVERYWHERE
+# BULLETPROOF FILE FINDER
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data
 
 def find_csv_file():
     """Search for CSV file in current folder, subfolders, and parent folders"""
-
-    # Get the folder where this script is located
     script_dir = Path(__file__).parent.absolute()
-
-    # Search patterns - check script folder, subfolders, and 3 levels up
     search_roots = [
-        script_dir,
-        script_dir / "work",
-        script_dir / "Working",
-        script_dir / "data",
-        script_dir / "Data",
-        script_dir / "input",
-        script_dir.parent,
-        script_dir.parent / "work",
-        script_dir.parent / "Working",
-        script_dir.parent.parent,
-        Path.cwd(),
-        Path.cwd() / "work",
-        Path.cwd() / "Working",
+        script_dir, script_dir / "work", script_dir / "Working",
+        script_dir / "data", script_dir / "Data", script_dir / "input",
+        script_dir.parent, script_dir.parent / "work", script_dir.parent / "Working",
+        script_dir.parent.parent, Path.cwd(), Path.cwd() / "work", Path.cwd() / "Working",
     ]
-
-    # Possible file name patterns
-    patterns = [
-        "*SIRTI*.csv",
-        "*sirti*.csv",
-        "*Activities*.csv",
-        "*activities*.csv",
-        "*.csv"
-    ]
-
+    patterns = ["*SIRTI*.csv", "*sirti*.csv", "*Activities*.csv", "*activities*.csv", "*.csv"]
     found_files = []
-
     for root in search_roots:
-        if not root.exists():
-            continue
+        if not root.exists(): continue
         for pattern in patterns:
             matches = list(root.glob(pattern))
             for match in matches:
-                if match.is_file() and match.stat().st_size > 1000:  # Ignore tiny files
+                if match.is_file() and match.stat().st_size > 1000:
                     found_files.append(str(match))
-
-    # Remove duplicates and sort by likelihood (SIRTI in name = higher priority)
     seen = set()
     unique_files = []
     for f in found_files:
         if f.lower() not in seen:
             seen.add(f.lower())
             unique_files.append(f)
-
-    # Prioritize files with "SIRTI" or "Activities" in name
     priority = [f for f in unique_files if "sirti" in f.lower() or "activities" in f.lower()]
     others = [f for f in unique_files if f not in priority]
-
     return priority + others
 
 def load_data(file_path):
@@ -197,21 +168,15 @@ def load_data(file_path):
     df['Resource'] = df['Resource'].str.strip().str.title()
     df['Technician_Name'] = df['Resource'].fillna('Unknown')
     df['Activity Status'] = df['Activity Status'].str.strip().str.lower()
-
     def parse_duration(d):
-        if pd.isna(d) or d == '00:00' or d == '':
-            return 0
+        if pd.isna(d) or d == '00:00' or d == '': return 0
         try:
             d = str(d).strip()
             parts = d.split(':')
-            if len(parts) == 3:
-                return int(parts[0]) * 60 + int(parts[1]) + int(parts[2])/60
-            elif len(parts) == 2:
-                return int(parts[0]) + int(parts[1])/60
-        except:
-            return 0
+            if len(parts) == 3: return int(parts[0]) * 60 + int(parts[1]) + int(parts[2])/60
+            elif len(parts) == 2: return int(parts[0]) + int(parts[1])/60
+        except: return 0
         return 0
-
     df['Duration_Minutes'] = df['Duration'].apply(parse_duration)
     df['Date_Clean'] = pd.to_datetime(df['Date'], format='%m/%d/%y', errors='coerce')
     df['Customer_Phone'] = df['Phone'].fillna(df['Telephone Number']).fillna('N/A')
@@ -224,18 +189,13 @@ def load_data(file_path):
 st.sidebar.markdown("## 📁 Data File")
 st.sidebar.markdown("---")
 
-# Auto-search for files
 found_files = find_csv_file()
-
 selected_file = None
 
 if found_files:
     st.sidebar.markdown(f"<div class='file-found'>🔍 Found {len(found_files)} CSV file(s)</div>", unsafe_allow_html=True)
-
-    # Show file picker
     file_options = ["📂 Select a file..."] + found_files
     selected = st.sidebar.selectbox("Choose CSV file:", file_options, index=0)
-
     if selected != "📂 Select a file...":
         selected_file = selected
         st.sidebar.success(f"✅ Selected: {os.path.basename(selected)}")
@@ -244,12 +204,10 @@ if found_files:
 else:
     st.sidebar.warning("⚠️ No CSV files found automatically")
 
-# Manual upload fallback
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📤 Or Upload Manually")
 uploaded_file = st.sidebar.file_uploader("Drop CSV file here:", type=['csv'])
 
-# Load data
 if uploaded_file is not None:
     df = load_data(uploaded_file)
     st.sidebar.success("✅ Uploaded file loaded!")
@@ -267,10 +225,6 @@ else:
             <p>OR</p>
             <p>📤 <b>Upload</b> using the sidebar button</p>
         </div>
-        <p style="color: #666; margin-top: 30px;">
-            Looking for: <code>Activities-SIRTI_04_12_26.csv</code><br>
-            Searches in: current folder, subfolders, and parent folders
-        </p>
     </div>
     """, unsafe_allow_html=True)
     st.stop()
@@ -435,12 +389,38 @@ if selected_tech == all_option:
         })
 
     tech_summary_df = pd.DataFrame(tech_data)
-    def color_quota_status(val):
-        if 'MET' in val: return 'background-color: #d4edda; color: #155724; font-weight: bold'
-        elif 'NONE' in val: return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
-        else: return 'background-color: #fff3cd; color: #856404; font-weight: bold'
 
-    styled_df = tech_summary_df.style.applymap(color_quota_status, subset=['Status'])
+    # ROBUST STYLING - Works with all pandas versions
+    def highlight_status(val):
+        if 'MET' in val:
+            return 'background-color: #d4edda; color: #155724; font-weight: bold'
+        elif 'NONE' in val:
+            return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
+        else:
+            return 'background-color: #fff3cd; color: #856404; font-weight: bold'
+
+    # Use apply with axis=1 for row-wise styling (more compatible)
+    def style_rows(row):
+        styles = [''] * len(row)
+        if 'MET' in str(row['Status']):
+            styles = ['background-color: #d4edda'] * len(row)
+        elif 'NONE' in str(row['Status']):
+            styles = ['background-color: #f8d7da'] * len(row)
+        else:
+            styles = ['background-color: #fff3cd'] * len(row)
+        return styles
+
+    try:
+        # Try new pandas style (2.1+)
+        styled_df = tech_summary_df.style.map(highlight_status, subset=['Status'])
+    except AttributeError:
+        try:
+            # Fallback to older applymap
+            styled_df = tech_summary_df.style.applymap(highlight_status, subset=['Status'])
+        except:
+            # Ultimate fallback - no styling
+            styled_df = tech_summary_df
+
     st.dataframe(styled_df, use_container_width=True, height=600)
 
     st.markdown("---")
