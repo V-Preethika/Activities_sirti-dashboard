@@ -124,59 +124,93 @@ st.markdown("""
         border-radius: 5px;
         margin: 10px 0;
     }
+    .data-loaded {
+        background: #d4edda;
+        border-left: 4px solid #11998e;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+        color: #155724;
+    }
 </style>
 """, unsafe_allow_html=True)
 
 DAILY_QUOTA = 4
 
 # ═══════════════════════════════════════════════════════════════
-# BULLETPROOF FILE FINDER
+# BULLETPROOF FILE LOADER - Works on both local and Streamlit Cloud
 # ═══════════════════════════════════════════════════════════════
 @st.cache_data
 
-def find_csv_file():
-    """Search for CSV file in current folder, subfolders, and parent folders"""
-    script_dir = Path(__file__).parent.absolute()
-    search_roots = [
-        script_dir, script_dir / "work", script_dir / "Working",
-        script_dir / "data", script_dir / "Data", script_dir / "input",
-        script_dir.parent, script_dir.parent / "work", script_dir.parent / "Working",
-        script_dir.parent.parent, Path.cwd(), Path.cwd() / "work", Path.cwd() / "Working",
-    ]
-    patterns = ["*SIRTI*.csv", "*sirti*.csv", "*Activities*.csv", "*activities*.csv", "*.csv"]
-    found_files = []
-    for root in search_roots:
-        if not root.exists(): continue
-        for pattern in patterns:
-            matches = list(root.glob(pattern))
-            for match in matches:
-                if match.is_file() and match.stat().st_size > 1000:
-                    found_files.append(str(match))
-    seen = set()
-    unique_files = []
-    for f in found_files:
-        if f.lower() not in seen:
-            seen.add(f.lower())
-            unique_files.append(f)
-    priority = [f for f in unique_files if "sirti" in f.lower() or "activities" in f.lower()]
-    others = [f for f in unique_files if f not in priority]
-    return priority + others
+def load_data_auto():
+    """Auto-find and load CSV from multiple sources"""
 
-def load_data(file_path):
-    """Load and clean the CSV data"""
-    df = pd.read_csv(file_path, encoding='utf-8-sig')
+    # SOURCE 1: Look in the same folder as the script (GitHub repo on Streamlit Cloud)
+    script_dir = Path(__file__).parent.absolute()
+
+    # Possible CSV file names
+    csv_names = [
+        'Activities-SIRTI_04_12_26.csv',
+        'Activities-SIRTI.csv',
+        'SIRTI.csv',
+        'activities.csv'
+    ]
+
+    # Try to find CSV in script directory (this works on Streamlit Cloud)
+    for csv_name in csv_names:
+        csv_path = script_dir / csv_name
+        if csv_path.exists():
+            st.sidebar.markdown(f"<div class='data-loaded'>✅ Auto-loaded: {csv_name}</div>", unsafe_allow_html=True)
+            return pd.read_csv(csv_path, encoding='utf-8-sig')
+
+    # SOURCE 2: Search subfolders (work, data, etc.)
+    search_folders = [script_dir / 'work', script_dir / 'data', script_dir / 'Data']
+    for folder in search_folders:
+        if folder.exists():
+            for csv_name in csv_names:
+                csv_path = folder / csv_name
+                if csv_path.exists():
+                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Found in {folder.name}: {csv_name}</div>", unsafe_allow_html=True)
+                    return pd.read_csv(csv_path, encoding='utf-8-sig')
+
+    # SOURCE 3: Try glob patterns
+    for pattern in ['*.csv', '**/*.csv']:
+        matches = list(script_dir.glob(pattern))
+        if matches:
+            # Filter out tiny files (not real data)
+            valid_matches = [m for m in matches if m.stat().st_size > 1000]
+            if valid_matches:
+                # Prefer files with "SIRTI" or "Activities" in name
+                priority = [m for m in valid_matches if 'sirti' in m.name.lower() or 'activities' in m.name.lower()]
+                if priority:
+                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Auto-detected: {priority[0].name}</div>", unsafe_allow_html=True)
+                    return pd.read_csv(priority[0], encoding='utf-8-sig')
+                else:
+                    st.sidebar.markdown(f"<div class='data-loaded'>✅ Using: {valid_matches[0].name}</div>", unsafe_allow_html=True)
+                    return pd.read_csv(valid_matches[0], encoding='utf-8-sig')
+
+    return None
+
+def clean_dataframe(df):
+    """Clean and prepare the dataframe"""
     df['Resource'] = df['Resource'].str.strip().str.title()
     df['Technician_Name'] = df['Resource'].fillna('Unknown')
     df['Activity Status'] = df['Activity Status'].str.strip().str.lower()
+
     def parse_duration(d):
-        if pd.isna(d) or d == '00:00' or d == '': return 0
+        if pd.isna(d) or d == '00:00' or d == '':
+            return 0
         try:
             d = str(d).strip()
             parts = d.split(':')
-            if len(parts) == 3: return int(parts[0]) * 60 + int(parts[1]) + int(parts[2])/60
-            elif len(parts) == 2: return int(parts[0]) + int(parts[1])/60
-        except: return 0
+            if len(parts) == 3:
+                return int(parts[0]) * 60 + int(parts[1]) + int(parts[2])/60
+            elif len(parts) == 2:
+                return int(parts[0]) + int(parts[1])/60
+        except:
+            return 0
         return 0
+
     df['Duration_Minutes'] = df['Duration'].apply(parse_duration)
     df['Date_Clean'] = pd.to_datetime(df['Date'], format='%m/%d/%y', errors='coerce')
     df['Customer_Phone'] = df['Phone'].fillna(df['Telephone Number']).fillna('N/A')
@@ -184,50 +218,42 @@ def load_data(file_path):
     return df
 
 # ═══════════════════════════════════════════════════════════════
-# SIDEBAR - FILE SELECTION
+# SIDEBAR - FILE STATUS
 # ═══════════════════════════════════════════════════════════════
 st.sidebar.markdown("## 📁 Data File")
 st.sidebar.markdown("---")
 
-found_files = find_csv_file()
-selected_file = None
+# Try to auto-load first
+df = load_data_auto()
 
-if found_files:
-    st.sidebar.markdown(f"<div class='file-found'>🔍 Found {len(found_files)} CSV file(s)</div>", unsafe_allow_html=True)
-    file_options = ["📂 Select a file..."] + found_files
-    selected = st.sidebar.selectbox("Choose CSV file:", file_options, index=0)
-    if selected != "📂 Select a file...":
-        selected_file = selected
-        st.sidebar.success(f"✅ Selected: {os.path.basename(selected)}")
+if df is not None:
+    df = clean_dataframe(df)
+    st.sidebar.markdown("<div class='data-loaded'>✅ Data loaded successfully!</div>", unsafe_allow_html=True)
+    st.sidebar.markdown(f"- **Records:** {len(df)}")
+    st.sidebar.markdown(f"- **Technicians:** {df['Technician_Name'].nunique()}")
+    st.sidebar.markdown(f"- **Date:** {df['Date_Clean'].iloc[0].strftime('%Y-%m-%d') if len(df) > 0 and df['Date_Clean'].notna().any() else 'N/A'}")
+else:
+    st.sidebar.warning("⚠️ No CSV found in repo. Please upload below.")
+
+    # Manual upload fallback
+    uploaded_file = st.sidebar.file_uploader("Upload CSV file:", type=['csv'])
+
+    if uploaded_file is not None:
+        df = clean_dataframe(pd.read_csv(uploaded_file, encoding='utf-8-sig'))
+        st.sidebar.success("✅ Uploaded file loaded!")
     else:
-        st.sidebar.info("👆 Select a file from the list above")
-else:
-    st.sidebar.warning("⚠️ No CSV files found automatically")
-
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📤 Or Upload Manually")
-uploaded_file = st.sidebar.file_uploader("Drop CSV file here:", type=['csv'])
-
-if uploaded_file is not None:
-    df = load_data(uploaded_file)
-    st.sidebar.success("✅ Uploaded file loaded!")
-elif selected_file:
-    df = load_data(selected_file)
-    st.sidebar.success(f"✅ Loaded: {os.path.basename(selected_file)}")
-else:
-    st.sidebar.error("❌ No file loaded!")
-    st.markdown("""
-    <div style="text-align: center; padding: 50px;">
-        <h1>📁 Welcome to SIRTI Dashboard</h1>
-        <h3>Please select or upload your CSV file</h3>
-        <div class="upload-box" style="max-width: 500px; margin: 30px auto;">
-            <p>🔍 <b>Auto-search</b> found files in nearby folders</p>
-            <p>OR</p>
-            <p>📤 <b>Upload</b> using the sidebar button</p>
+        st.sidebar.error("❌ No data loaded!")
+        st.markdown("""
+        <div style="text-align: center; padding: 50px;">
+            <h1>📁 SIRTI Dashboard</h1>
+            <h3>Data file not found</h3>
+            <div class="upload-box" style="max-width: 600px; margin: 30px auto;">
+                <p><b>Expected file:</b> <code>Activities-SIRTI_04_12_26.csv</code></p>
+                <p>Please upload your CSV file using the sidebar button.</p>
+            </div>
         </div>
-    </div>
-    """, unsafe_allow_html=True)
-    st.stop()
+        """, unsafe_allow_html=True)
+        st.stop()
 
 # ═══════════════════════════════════════════════════════════════
 # SIDEBAR - TECHNICIAN SELECTOR
@@ -390,36 +416,17 @@ if selected_tech == all_option:
 
     tech_summary_df = pd.DataFrame(tech_data)
 
-    # ROBUST STYLING - Works with all pandas versions
+    # ROBUST STYLING - No applymap, uses simple column coloring
     def highlight_status(val):
-        if 'MET' in val:
-            return 'background-color: #d4edda; color: #155724; font-weight: bold'
-        elif 'NONE' in val:
-            return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
-        else:
-            return 'background-color: #fff3cd; color: #856404; font-weight: bold'
+        if 'MET' in val: return 'background-color: #d4edda; color: #155724; font-weight: bold'
+        elif 'NONE' in val: return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
+        else: return 'background-color: #fff3cd; color: #856404; font-weight: bold'
 
-    # Use apply with axis=1 for row-wise styling (more compatible)
-    def style_rows(row):
-        styles = [''] * len(row)
-        if 'MET' in str(row['Status']):
-            styles = ['background-color: #d4edda'] * len(row)
-        elif 'NONE' in str(row['Status']):
-            styles = ['background-color: #f8d7da'] * len(row)
-        else:
-            styles = ['background-color: #fff3cd'] * len(row)
-        return styles
-
+    # Use apply with axis=0 for column-wise styling (most compatible)
     try:
-        # Try new pandas style (2.1+)
-        styled_df = tech_summary_df.style.map(highlight_status, subset=['Status'])
-    except AttributeError:
-        try:
-            # Fallback to older applymap
-            styled_df = tech_summary_df.style.applymap(highlight_status, subset=['Status'])
-        except:
-            # Ultimate fallback - no styling
-            styled_df = tech_summary_df
+        styled_df = tech_summary_df.style.apply(lambda x: [highlight_status(v) if i == 5 else '' for i, v in enumerate(x)], axis=1)
+    except Exception:
+        styled_df = tech_summary_df  # Fallback: no styling
 
     st.dataframe(styled_df, use_container_width=True, height=600)
 
